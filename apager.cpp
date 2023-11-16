@@ -318,7 +318,7 @@ int main(int argc, char* argv[], char* envp[])
     // uint64_t* user_esp_addr = (uint64_t*) mmap((void*)0x6ff786acc000, 1 << 30, PROT_WRITE | PROT_READ, MAP_ANON, -1, 0u);
 
     uint64_t user_esp_orig = reinterpret_cast<std::uintptr_t>(user_esp_addr);
-    user_esp_addr = (uint64_t*)(((uint64_t)user_esp_addr) + (1 << 12));
+    user_esp_addr = (uint64_t*)(((uint64_t)user_esp_addr) + 4*(1 << 12));
 
     if(STACK_DEBUG){
         printf("User esp set at: %0lx\n", user_esp_orig);
@@ -450,8 +450,8 @@ int main(int argc, char* argv[], char* envp[])
         char* data_loc = (char*) (start_aux_addr + cur_aux * sizeof(Elf64_auxv_t));
         char* data = (char*)&av[cur_aux];
 
-        printf("Location to copy is: %8lx\n", (uint64_t)data_loc);
-        printf("Source to copy is  : %8lx\n", (uint64_t)data);
+        // printf("Location to copy is: %8lx\n", (uint64_t)data_loc);
+        // printf("Source to copy is  : %8lx\n", (uint64_t)data);
         printf("Data is            : %ld\n", av[cur_aux].a_type);
         memcpy(data_loc, data, sizeof(Elf64_auxv_t));
     }
@@ -515,13 +515,11 @@ int main(int argc, char* argv[], char* envp[])
         }
     }
 
-    // printf("STACK SEPARATOR\n\n");
+    printf("STACK SEPARATOR\n\n");
 
-    // for(int i = 0; i < 86; i++){
-    //     printf("user_esp_addr[%2d] (%8lx) - %8lx\n", i, (uint64_t)(user_esp_addr+i), (uint64_t)user_esp_addr[i]);
-    // }
-
-    // return 0;
+    for(int i = 0; i < 86; i++){
+        printf("user_esp_addr[%2d] (%8lx) - %8lx\n", i, (uint64_t)(user_esp_addr+i), (uint64_t)user_esp_addr[i]);
+    }
 
 
     // GETTING THE ARG TRAP SET
