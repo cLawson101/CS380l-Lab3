@@ -40,8 +40,17 @@ using namespace std;
                      (((x) & 0x2) ? PROT_WRITE : 0) | \
                      (((x) & 0x4) ? PROT_EXEC : 0))
 
+#define DEBUG 0
+
 #define ELF_DEBUG 0
-#define STACK_DEBUG 1
+#define STACK_DEBUG 0
+#define ARG_DEBUG 0
+#define ENVP_DEBUG 0
+#define AV_DEBUG 0
+#define SIGTRAP_DEBUG 0
+
+
+#define STACK_CHECK_DEBUG 0
 
 int exacutable = -1;
 
@@ -102,18 +111,19 @@ void stack_check(void* top_of_stack, uint64_t argc, char** argv) {
 // defining main with arguments
 int main(int argc, char* argv[], char* envp[])
 {
-    printf("GIVEN THE FOLLOWING\n");
-    printf("You have entered %d arguments:\n", argc);
 
-    printf("You have this for envp: %lx\n", (uint64_t) envp);
+    if(DEBUG){
+        printf("GIVEN THE FOLLOWING\n");
+        printf("You have entered %d arguments:\n", argc);
 
-    uint64_t user_argc = argc - 1;
- 
-    for (int i = 0; i < argc; i++) {
-        printf("%s\n", argv[i]);
+        printf("You have this for envp: %lx\n", (uint64_t) envp);
+
+        for (int i = 0; i < argc; i++) {
+            printf("%s\n", argv[i]);
+        }
     }
-
-    printf("About to open: %s\n", argv[1]);
+    
+    uint64_t user_argc = argc - 1;
     int fd = open(argv[1], O_RDONLY);
 
     if (fd == -1){
@@ -122,7 +132,10 @@ int main(int argc, char* argv[], char* envp[])
     }
 
     exacutable = fd;
-    printf("FD is: %d\n", fd);
+
+    if(DEBUG){
+        printf("FD is: %d\n", fd);
+    }
 
     ElfHeader* header = (ElfHeader*) malloc(sizeof(ElfHeader));
     ProgramHeader* program_header = (ProgramHeader*) malloc(sizeof(ProgramHeader));
@@ -328,7 +341,11 @@ int main(int argc, char* argv[], char* envp[])
     // Insert the envp arguments
     uint64_t num_envp = 0;
     while(envp[num_envp]){
-        printf("data[%ld]: %s\n", num_envp, (char*)envp[num_envp]);
+
+        if(ENVP_DEBUG){
+            printf("data[%ld]: %s\n", num_envp, (char*)envp[num_envp]);
+        }
+
         num_envp++;
     }
 
@@ -341,7 +358,11 @@ int main(int argc, char* argv[], char* envp[])
     av = (Elf64_auxv_t*) p;
 
     while(av[num_aux].a_type != AT_NULL){
-        printf("av[%02ld] av value: %02ld\n", num_aux, av[num_aux].a_type);
+
+        if(AV_DEBUG){
+            printf("av[%02ld] av value: %02ld\n", num_aux, av[num_aux].a_type);
+        }
+
         num_aux++;
     }
 
@@ -371,12 +392,14 @@ int main(int argc, char* argv[], char* envp[])
         user_esp_addr[1 + user_argc + 1 + num_envp + 1 + i] = 0xBEEFDE00 + i;
     }
 
-    printf("%ld\n", user_argc + 1);
-    printf("%ld\n", num_envp + 1);
-    printf("%ld\n", num_aux + 1);
-    printf("%ld\n", 1 + user_argc + 1 + num_envp + 1 + num_aux + 1);
+    if(STACK_DEBUG){
+        printf("%ld\n", user_argc + 1);
+        printf("%ld\n", num_envp + 1);
+        printf("%ld\n", num_aux + 1);
+        printf("%ld\n", 1 + user_argc + 1 + num_envp + 1 + num_aux + 1);
+    }
+
     user_esp_addr[1 + user_argc + 1 + num_envp + 1 + num_aux + 1] = 0;
-    printf("Passed\n");
 
     // Start Filling in values
 
@@ -384,29 +407,45 @@ int main(int argc, char* argv[], char* envp[])
     user_esp_addr[1] = data_start;
 
     for(int i = 2; i < user_argc + 1; i++){
-        printf("Looking at %s\n", argv[i-1]);
+        
+        if(ARG_DEBUG){
+            printf("Looking at %s\n", argv[i-1]);
+        }
+
         user_esp_addr[i] = user_esp_addr[i - 1] + len(argv[i-1]);
     }
 
     // Next insert envp pointers
 
-    printf("last item is: %08lx\n", user_esp_addr[user_argc]);
-    printf("Last element is: %s\n", argv[user_argc]);
-    printf("Last element len is: %d\n", len(argv[user_argc]));
+    if(STACK_DEBUG){
+        printf("last item is: %08lx\n", user_esp_addr[user_argc]);
+        printf("Last element is: %s\n", argv[user_argc]);
+        printf("Last element len is: %d\n", len(argv[user_argc]));
+    }
+
     uint64_t end_arg_data = user_esp_addr[user_argc] + len(argv[user_argc]);
     uint64_t arg_data_pad = 8 - (end_arg_data % 8);
-    printf("Ending Data %08lx\n", end_arg_data);
-    printf("Padding %ld\n", arg_data_pad);
+    
+    if(STACK_DEBUG){
+        printf("Ending Data %08lx\n", end_arg_data);
+        printf("Padding %ld\n", arg_data_pad);
+    }
 
     uint64_t start_env_data = end_arg_data + arg_data_pad;
 
-    printf("Starting env_data: %08lx\n", start_env_data);
+    if(STACK_DEBUG){
+        printf("Starting env_data: %08lx\n", start_env_data);
+    }
 
     user_esp_addr[user_argc + 2] = start_env_data;
 
     for(int i = 1; i < num_envp; i++){
-        printf("Looking at %s\n", envp[i-1]);
-        printf("len is: %d\n", len(envp[i-1]));
+
+        if(ENVP_DEBUG){
+            printf("Looking at %s\n", envp[i-1]);
+            printf("len is: %d\n", len(envp[i-1]));
+        }
+
         user_esp_addr[user_argc + 2 + i] = user_esp_addr[user_argc + 2 + i - 1] + len(envp[i-1]);
     }
 
@@ -418,14 +457,19 @@ int main(int argc, char* argv[], char* envp[])
         char* data_loc = (char*) user_esp_addr[1+arg];
         char* data = argv[1+arg];
 
-        printf("Location to copy is: %8lx\n", (uint64_t)data_loc);
-        printf("Source to copy is  : %8lx\n", (uint64_t)data);
-        printf("Data is            : %s\n", data);
-        printf("Len(data) is       : %d\n", len(data));
+        if(ARG_DEBUG){
+            printf("Location to copy is: %8lx\n", (uint64_t)data_loc);
+            printf("Source to copy is  : %8lx\n", (uint64_t)data);
+            printf("Data is            : %s\n", data);
+            printf("Len(data) is       : %d\n", len(data));
+        }
+
         memcpy(data_loc, data, len(data));
     }
 
-    printf("FINISHED ARGV DATA\n\n");
+    if(ARG_DEBUG){
+        printf("FINISHED ARGV DATA\n\n");
+    }
 
     // Now the envp data
 
@@ -433,14 +477,19 @@ int main(int argc, char* argv[], char* envp[])
         char* data_loc = (char*) user_esp_addr[1 + (user_argc + 1) + cur_env];
         char* data = envp[cur_env];
 
-        printf("Location to copy is: %8lx\n", (uint64_t)data_loc);
-        printf("Source to copy is  : %8lx\n", (uint64_t)data);
-        printf("Data is            : %s\n", data);
-        printf("Len(data) is       : %ld\n", sizeof(Elf64_auxv_t));
+        if(ENVP_DEBUG){
+            printf("Location to copy is: %8lx\n", (uint64_t)data_loc);
+            printf("Source to copy is  : %8lx\n", (uint64_t)data);
+            printf("Data is            : %s\n", data);
+            printf("Len(data) is       : %ld\n", sizeof(Elf64_auxv_t));
+        }
+
         memcpy(data_loc, data, len(data));
     }
 
-    printf("FINISHED ENVP DATA\n\n");
+    if(ENVP_DEBUG){
+        printf("FINISHED ENVP DATA\n\n");
+    }
 
     // Lastly the aux data
     for(int cur_aux = 0; cur_aux < num_aux; cur_aux++){
@@ -450,54 +499,29 @@ int main(int argc, char* argv[], char* envp[])
         char* data_loc = (char*) (start_aux_addr + cur_aux * sizeof(Elf64_auxv_t));
         char* data = (char*)&av[cur_aux];
 
-        // printf("Location to copy is: %8lx\n", (uint64_t)data_loc);
-        // printf("Source to copy is  : %8lx\n", (uint64_t)data);
-        printf("Data is            : %ld\n", av[cur_aux].a_type);
+        if(AV_DEBUG){
+            printf("Data is            : %ld\n", av[cur_aux].a_type);
+        }
+
         memcpy(data_loc, data, sizeof(Elf64_auxv_t));
     }
 
-    printf("FINISHED AUX DATA\n\n");
-
-    
-    printf("Last env pointer: %08x\n", (uint64_t)&user_esp_addr[1 + user_argc + 1 + num_envp + 1]);
+    if(AV_DEBUG){
+        printf("FINISHED AUX DATA\n\n");
+    }
 
     // CHECK THE VALIDITY OF THE STACK
-    // printf("ARGC:\n");
-    // printf("user_esp_addr[%2d] (%8lx) - %08lx\n", 0, (uint64_t)(user_esp_addr), (uint64_t)user_esp_addr[0]);
-    
-    // printf("ARGV:\n");
-    // for(int i = 0; i < user_argc; i++){
-    //     printf("user_esp_addr[%2d] - %s\n", i + 1, (char*)user_esp_addr[i+1]);
-    // }
-
-    // printf("ARGV ENDS:\n");
-    // printf("user_esp_addr[%2d] - %d\n", 1 + user_argc, user_esp_addr[1 + user_argc]);
-    
-    // printf("ENVP:\n");
-    // for(int i = 0; i < num_envp; i++){
-    //     printf("user_esp_addr[%2d] - %s\n", 1 + user_argc + 1 + i, (char*)user_esp_addr[1 + user_argc + 1 + i]);
-    // }
-    // printf("ENVP ENDS:\n");
-    // printf("user_esp_addr[%2d] - %d\n", 1 + user_argc + 1 + num_envp, user_esp_addr[1 + user_argc + 1 + num_envp]);
-
-    // printf("AUX:\n");
-
-    // for(int i = 0; i < num_aux * 2; i++){
-    //     printf("user_esp_addr[%2d] - %x\n", 1 + user_argc + 1 + num_envp + 1 + i, user_esp_addr[1 + user_argc + 1 + num_envp + 1 + i]);
-    // }
-
-    // printf("AUX ENDS\n");
-    // printf("user_esp_addr[%2d] - %d\n", 1 + user_argc + 1 + num_envp + 1 + num_aux * 2, user_esp_addr[1 + user_argc + 1 + num_envp + 1 + num_aux * 2]);
-
     // Now need to do some modification to the aux vectors in accordance with
     // loader.c from the github repo
 
-    printf("AT_PHDR is: %d\n", AT_PHDR);
-    printf("AT_PHENT is: %d\n", AT_PHENT);
-    printf("AT_PHNUM is: %d\n", AT_PHNUM);
-    printf("AT_BASE is: %d\n", AT_BASE);
-    printf("AT_ENTRY is: %d\n", AT_ENTRY);
-    printf("AT_EXECFN is: %d\n", AT_EXECFN);
+    if(STACK_DEBUG){
+        printf("AT_PHDR is: %d\n", AT_PHDR);
+        printf("AT_PHENT is: %d\n", AT_PHENT);
+        printf("AT_PHNUM is: %d\n", AT_PHNUM);
+        printf("AT_BASE is: %d\n", AT_BASE);
+        printf("AT_ENTRY is: %d\n", AT_ENTRY);
+        printf("AT_EXECFN is: %d\n", AT_EXECFN);
+    }
 
     #define AVSET(t, v, expr) case (t): (v)->a_un.a_val = (expr); break
     for(int i = 0; i < num_aux; i++){
@@ -515,12 +539,12 @@ int main(int argc, char* argv[], char* envp[])
         }
     }
 
-    printf("STACK SEPARATOR\n\n");
-
-    for(int i = 0; i < 86; i++){
-        printf("user_esp_addr[%2d] (%8lx) - %8lx\n", i, (uint64_t)(user_esp_addr+i), (uint64_t)user_esp_addr[i]);
+    if(STACK_DEBUG){
+        printf("STACK SEPARATOR\n\n");
+        for(int i = 0; i < 86; i++){
+            printf("user_esp_addr[%2d] (%8lx) - %8lx\n", i, (uint64_t)(user_esp_addr+i), (uint64_t)user_esp_addr[i]);
+        }
     }
-
 
     // GETTING THE ARG TRAP SET
     // Taken from:
@@ -532,41 +556,22 @@ int main(int argc, char* argv[], char* envp[])
     act.sa_flags = SA_SIGINFO;
     sigaction(SIGSEGV, &act, 0);
 
-    printf("Entry is: %08lx\n", header->e_entry);
-    printf("User stack: %08lx\n", (uint64_t)(user_esp_addr));
+    if(SIGTRAP_DEBUG){
+        printf("Entry is: %08lx\n", header->e_entry);
+        printf("User stack: %08lx\n", (uint64_t)(user_esp_addr));
+    }
 
     uint64_t* cur_addr = (uint64_t*)(user_esp_addr);
 
-    stack_check((void*)user_esp_addr, user_argc, &argv[1]);
+    if(STACK_CHECK_DEBUG){
+        stack_check((void*)user_esp_addr, user_argc, &argv[1]);
+    }
 
-    printf("ABOUT TO SWITCH TO USER\n");
+    if(SIGTRAP_DEBUG){
+        printf("ABOUT TO SWITCH TO USER\n");
+    }
+
     switchToUser(header->e_entry, (uint64_t)(user_esp_addr));
     printf("SHOULD NOT PRINT\n");
-
-    uint8_t* start_read = (uint8_t*) 0x404510;
-    uint64_t num_lines = 5;
-
-    for(int i = 0; i < num_lines; i++){
-        printf("%08lx - %02x\n", (uint64_t)(start_read + i), *(start_read + i));
-    }
-
-    printf("\n");
-
-    start_read = (uint8_t*) 0x404648;
-    num_lines = 5;
-
-    for(int i = 0; i < num_lines; i++){
-        printf("%08lx - %02x\n", (uint64_t)(start_read + i), *(start_read + i));
-    }
-
-    printf("\n");
-
-    start_read = (uint8_t*) 0x5D6E09;
-    num_lines = 8;
-
-    for(int i = 0; i < num_lines; i++){
-        printf("%08lx - %02x\n", (uint64_t)(start_read + i), *(start_read + i));
-    }
-    
     return 0;
 }
