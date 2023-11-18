@@ -6,13 +6,13 @@ apager: apager.cpp my_elf.h switch.h
 run-apager: apager
 	./apager.exe a.out hello world
 
-dpager: dpager.cpp elf.h switch.h
+dpager: dpager.cpp my_elf.h switch.h
 	g++ -o dpager.exe dpager.cpp switch.S
 
 run-dpager: dpager
 	./dpager.exe a.out hello world
 
-hpager: hpager.cpp elf.h switch.h
+hpager: hpager.cpp my_elf.h switch.h
 	g++ -o hpager.exe hpager.cpp switch.S
 
 run-hpager: hpager
