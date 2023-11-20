@@ -40,8 +40,19 @@ using namespace std;
                      (((x) & 0x2) ? PROT_WRITE : 0) | \
                      (((x) & 0x4) ? PROT_EXEC : 0))
 
+#define DEBUG 0
+
 #define ELF_DEBUG 0
-#define STACK_DEBUG 1
+#define STACK_DEBUG 0
+#define ARG_DEBUG 0
+#define ENVP_DEBUG 0
+#define AV_DEBUG 0
+#define SIGTRAP_DEBUG 0
+
+#define SEGFAULT_DEBUG 1
+
+
+#define STACK_CHECK_DEBUG 0
 
 int exacutable = -1;
 
@@ -55,28 +66,36 @@ uint32_t len(const char* str){
 }
 
 void segfault_func(int sig, siginfo_t *si, void *arg){
-    printf("CAUGHT A SIGNAL %d\n", sig);
-    printf("vaddr at: %08lx\n", si->si_addr);
+
+    if(SEGFAULT_DEBUG){
+        printf("cur_addr at: %08lx\n", (uint64_t)si->si_addr);
+    }
 
     uint64_t cur_addr = (uint64_t)si->si_addr;
 
+    // if(cur_addr == 0x5307c0){
+    //     exit(-1);
+    // }
+
     ElfHeader* header = (ElfHeader*) malloc(sizeof(ElfHeader));
     ProgramHeader* program_header = (ProgramHeader*) malloc(sizeof(ProgramHeader));
+    int flags = MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS;
 
-    int ret = read(exacutable, header, sizeof(ElfHeader));
+    int ret = lseek(exacutable, 0, SEEK_SET);
+    ret = read(exacutable, header, sizeof(ElfHeader));
     if(ret == -1){
         perror("Read error");
         exit(255);
     }
 
     for(uint32_t i = 0; i < header->phnum; i++){
-        ret = lseek(fd, header->e_phoff + i * sizeof(ProgramHeader), SEEK_SET);
+        ret = lseek(exacutable, header->e_phoff + i * sizeof(ProgramHeader), SEEK_SET);
         if(ret == -1){
             perror("Lseek error");
             exit(255);
         }
 
-        ret = read(fd, program_header, sizeof(ProgramHeader));
+        ret = read(exacutable, program_header, sizeof(ProgramHeader));
 
         if(ret == -1){
             perror("Read error");
@@ -96,33 +115,312 @@ void segfault_func(int sig, siginfo_t *si, void *arg){
 
         // Check if the current address is in this current program_header
         if(start <= cur_addr && cur_addr < start + sz){
-            char* p = (char*)mmap((void*)start, sz, PROT_WRITE, flags, -1, 0u);
 
-            if( p == (void*) -1){
-                perror("mmap error");
-                exit(255);
+            if(SEGFAULT_DEBUG){
+                printf("p_vaddr: %08lx\n", program_header->p_vaddr);
+                printf("Off: %08lx\n", off);
+                printf("start: %08lx\n", start);
+                printf("end: %08lx\n", start + sz);
+                printf("sz: %08lx\n", sz);
+                printf("filesz: %08lx\n", program_header->p_filesz);
+                printf("memsz: %08lx\n", program_header->p_memsz);
+
             }
 
-            int lseek_ret = lseek(fd, program_header->p_offset, SEEK_SET);
-
-            if( lseek_ret < 0){
-                perror("lseek error");
-                exit(255);
-            }
-
-            int read_ret = read(fd, p + off, program_header->p_filesz);
-
-            if( read_ret != (ssize_t)program_header->p_filesz){
-                perror("read error");
-                exit(255);
-            }
+            uint64_t cur_page = TRUNC_PG(cur_addr);
             
-            mprotect(p, sz, PFLAGS(program_header->p_flags));
+            if(SEGFAULT_DEBUG){
+                printf("\n");
+                printf("cur_addr: %08lx\n", cur_addr);
+                printf("cur_page: %08lx\n", cur_page);
+            }
+
+            uint64_t data_offset, num_read;
+            uint64_t file_end = program_header->p_vaddr + program_header->p_filesz;
+            uint64_t page_end = TRUNC_PG(file_end);
+            uint64_t mem_end = start + sz;
+
+            if(SEGFAULT_DEBUG){
+                printf("file_end: %08lx\n", file_end);
+                printf("page_end: %08lx\n", page_end);
+                printf(" mem_end: %08lx\n", mem_end);
+            }
+
+            // Here we will be dealing with the case that the memory is page aligned
+            if(off == 0){
+                if(SEGFAULT_DEBUG){
+                    printf("IN OFF == 0\n");
+                }
+
+                // Case 1: internal block
+                if(cur_page < page_end){
+                    if(SEGFAULT_DEBUG){
+                        printf("CASE 1\n");
+                    }
+
+                    char* p = (char*)mmap((void*)cur_page, PAGE_SIZE, PROT_WRITE, flags, -1, 0u);
+                    if( p == (void*) -1){
+                        perror("mmap error");
+                        exit(255);
+                    }
+
+                    if(SEGFAULT_DEBUG){
+                        printf("mapping from: %08lx - %08lx\n", cur_page, cur_page + PAGE_SIZE);
+                    }
+
+                    data_offset = cur_page - program_header->p_vaddr;
+
+                    if(SEGFAULT_DEBUG){
+                        printf("Data_offset: %08lx\n", data_offset);
+                    }
+
+                    int lseek_ret = lseek(exacutable, program_header->p_offset + data_offset, SEEK_SET);
+                    if( lseek_ret < 0){
+                        perror("lseek error");
+                        exit(255);
+                    }
+
+                    int read_ret = read(exacutable, p, PAGE_SIZE);
+                    if(read_ret != PAGE_SIZE){
+                        perror("WRONG READ\n");
+                        exit(255);
+                    }
+
+                    mprotect(p, PAGE_SIZE, PFLAGS(program_header->p_flags));
+                }
+
+                // Case 2: final block
+                if(cur_page == page_end){
+                    if(SEGFAULT_DEBUG){
+                        printf("CASE 2\n");
+                    }
+
+                    num_read = file_end - cur_page;
+
+                    char* p = (char*)mmap((void*)cur_page, num_read, PROT_WRITE, flags, -1, 0u);
+                    if( p == (void*) -1){
+                        perror("mmap error");
+                        exit(255);
+                    }
+
+                    data_offset = cur_page - program_header->p_vaddr;
+
+                    if(SEGFAULT_DEBUG){
+                        printf("Data_offset: %08lx\n", data_offset);
+                    }
+
+                    int lseek_ret = lseek(exacutable, program_header->p_offset + data_offset, SEEK_SET);
+                    if( lseek_ret < 0){
+                        perror("lseek error");
+                        exit(255);
+                    }
+
+
+                    if(SEGFAULT_DEBUG){
+                        printf("num_read: %08lx\n", num_read);
+                    }
+
+                    int read_ret = read(exacutable, p, num_read);
+                    if(read_ret != num_read){
+                        perror("WRONG READ\n");
+                        exit(255);
+                    }
+
+                    mprotect(p, num_read, PFLAGS(program_header->p_flags));
+                }
+
+                // Case 3: out of scope
+                if(cur_page > page_end){
+                    if(SEGFAULT_DEBUG){
+                        printf("CASE 3\n");
+                    }
+                    
+                    exit(-1);
+                }
+
+
+            } else {
+                if(SEGFAULT_DEBUG){
+                    printf("IN OFF != 0\n");
+                }
+
+                int remaining = PAGE_SIZE - off;
+
+                // Case 1: Address is going to be in the first block:
+                if(cur_addr - program_header->p_vaddr <= remaining){
+                    if(SEGFAULT_DEBUG){
+                        printf("CASE 1\n");
+                    }
+
+                    char* p = (char*)mmap((void*)cur_page, remaining, PROT_WRITE, flags, -1, 0u);
+                    if( p == (void*) -1){
+                        perror("mmap error");
+                        exit(255);
+                    }
+
+                    if(SEGFAULT_DEBUG){
+                        printf("mapping from: %08lx - %08lx\n", cur_page, cur_page + remaining);
+                    }
+
+                    int lseek_ret = lseek(exacutable, program_header->p_offset, SEEK_SET);
+                    if( lseek_ret < 0){
+                        perror("lseek error");
+                        exit(255);
+                    }
+
+                    if(SEGFAULT_DEBUG){
+                        printf("remaining: %08x\n", remaining);
+                    }
+
+                    int read_ret = read(exacutable, p + off, remaining);
+                    if(read_ret != remaining){
+                        perror("WRONG READ\n");
+                        exit(255);
+                    }
+
+                    mprotect(p, remaining, PFLAGS(program_header->p_flags));          
+                }
+
+                // Case 2: internal block
+                if(cur_page < page_end){
+                    if(SEGFAULT_DEBUG){
+                        printf("CASE 2\n");
+                    }
+
+                    char* p = (char*)mmap((void*)cur_page, PAGE_SIZE, PROT_WRITE, flags, -1, 0u);
+                    if( p == (void*) -1){
+                        perror("mmap error");
+                        exit(255);
+                    }
+
+                    if(SEGFAULT_DEBUG){
+                        printf("mapping from: %08lx - %08lx\n", cur_page, cur_page + PAGE_SIZE);
+                    }
+
+                    data_offset = (cur_page - program_header->p_vaddr);
+
+                    if(SEGFAULT_DEBUG){
+                        printf("Data_offset: %08lx\n", data_offset);
+                    }
+
+                    int lseek_ret = lseek(exacutable, program_header->p_offset + data_offset, SEEK_SET);
+                    if( lseek_ret < 0){
+                        perror("lseek error");
+                        exit(255);
+                    }
+
+                    int read_ret = read(exacutable, p, PAGE_SIZE);
+                    if(read_ret != PAGE_SIZE){
+                        perror("WRONG READ\n");
+                        exit(255);
+                    }
+
+                    mprotect(p, PAGE_SIZE, PFLAGS(program_header->p_flags));
+                }
+
+                // Case 3
+                if(cur_page == page_end){
+                    if(SEGFAULT_DEBUG){
+                        printf("CASE 3\n");
+                    }
+
+                    num_read = file_end - cur_page;
+
+                    char* p = (char*)mmap((void*)cur_page, num_read, PROT_WRITE, flags, -1, 0u);
+                    if( p == (void*) -1){
+                        perror("mmap error");
+                        exit(255);
+                    }
+
+                    if(SEGFAULT_DEBUG){
+                        printf("mapping from: %08lx - %08lx\n", cur_page, cur_page + num_read);
+                    }
+
+                    data_offset = (cur_page - program_header->p_vaddr);
+
+                    if(SEGFAULT_DEBUG){
+                        printf("Data_offset: %08lx\n", data_offset);
+                    }
+
+                    int lseek_ret = lseek(exacutable, program_header->p_offset + data_offset, SEEK_SET);
+                    if( lseek_ret < 0){
+                        perror("lseek error");
+                        exit(255);
+                    }
+
+                    if(SEGFAULT_DEBUG){
+                        printf("num_read: %08lx\n", num_read);
+                    }
+
+                    int read_ret = read(exacutable, p, num_read);
+                    if(read_ret != num_read){
+                        perror("WRONG READ\n");
+                        exit(255);
+                    }
+
+                    mprotect(p, num_read, PFLAGS(program_header->p_flags));
+                    exit(-1);
+                }
+
+                // Case 4
+                if(cur_page > page_end){
+                    if(SEGFAULT_DEBUG){
+                        printf("CASE 4\n");
+                    }
+
+                    uint64_t upper_mem = ROUND_PG(file_end);
+                    if(SEGFAULT_DEBUG){
+                        printf("upper_mem: %08lx\n", upper_mem);
+                    }
+
+
+                    // CASE 4.1
+                    if(cur_addr < upper_mem){
+                        if(SEGFAULT_DEBUG){
+                            printf("CASE 4.1\n");
+                        }
+
+                        char* p = (char*)mmap((void*)file_end, upper_mem - file_end, PROT_WRITE, flags, -1, 0u);
+                        if( p == (void*) -1){
+                            perror("mmap error");
+                            exit(255);
+                        }
+
+                        if(SEGFAULT_DEBUG){
+                            printf("Mapping %08lx - %08lx\n", file_end, file_end + upper_mem - file_end);
+                        }
+
+                        mprotect(p, upper_mem - file_end, PFLAGS(program_header->p_flags));
+                        exit(-1);
+                    }
+
+                    if(cur_addr >= upper_mem && cur_page < mem_end){
+                        if(SEGFAULT_DEBUG){
+                            printf("CASE 4.2\n");
+                        }
+
+                        char* p = (char*)mmap((void*)cur_page, PAGE_SIZE, PROT_WRITE, flags, -1, 0u);
+                        if( p == (void*) -1){
+                            perror("mmap error");
+                            exit(255);
+                        }
+
+                        if(SEGFAULT_DEBUG){
+                            printf("Mapping %08lx - %08lx\n", cur_page, cur_page + PAGE_SIZE);
+                        }
+
+                        mprotect(p, PAGE_SIZE, PFLAGS(program_header->p_flags));
+                    }
+                }
+            }
+
+            if(SEGFAULT_DEBUG){
+                printf("----------------------END----------------------\n");
+                printf("\n");
+            }
             return;
         }
     }
-    
-    return;
 }
 
 void stack_check(void* top_of_stack, uint64_t argc, char** argv) {
@@ -163,18 +461,19 @@ void stack_check(void* top_of_stack, uint64_t argc, char** argv) {
 // defining main with arguments
 int main(int argc, char* argv[], char* envp[])
 {
-    printf("GIVEN THE FOLLOWING\n");
-    printf("You have entered %d arguments:\n", argc);
 
-    printf("You have this for envp: %lx\n", (uint64_t) envp);
+    if(DEBUG){
+        printf("GIVEN THE FOLLOWING\n");
+        printf("You have entered %d arguments:\n", argc);
 
-    uint64_t user_argc = argc - 1;
- 
-    for (int i = 0; i < argc; i++) {
-        printf("%s\n", argv[i]);
+        printf("You have this for envp: %lx\n", (uint64_t) envp);
+
+        for (int i = 0; i < argc; i++) {
+            printf("%s\n", argv[i]);
+        }
     }
-
-    printf("About to open: %s\n", argv[1]);
+    
+    uint64_t user_argc = argc - 1;
     int fd = open(argv[1], O_RDONLY);
 
     if (fd == -1){
@@ -183,7 +482,10 @@ int main(int argc, char* argv[], char* envp[])
     }
 
     exacutable = fd;
-    printf("FD is: %d\n", fd);
+
+    if(DEBUG){
+        printf("FD is: %d\n", fd);
+    }
 
     ElfHeader* header = (ElfHeader*) malloc(sizeof(ElfHeader));
     ProgramHeader* program_header = (ProgramHeader*) malloc(sizeof(ProgramHeader));
@@ -292,7 +594,7 @@ int main(int argc, char* argv[], char* envp[])
     // uint64_t* user_esp_addr = (uint64_t*) mmap((void*)0x6ff786acc000, 1 << 30, PROT_WRITE | PROT_READ, MAP_ANON, -1, 0u);
 
     uint64_t user_esp_orig = reinterpret_cast<std::uintptr_t>(user_esp_addr);
-    user_esp_addr = (uint64_t*)(((uint64_t)user_esp_addr) + (1 << 12));
+    user_esp_addr = (uint64_t*)(((uint64_t)user_esp_addr) + 4*(1 << 12));
 
     if(STACK_DEBUG){
         printf("User esp set at: %0lx\n", user_esp_orig);
@@ -302,7 +604,11 @@ int main(int argc, char* argv[], char* envp[])
     // Insert the envp arguments
     uint64_t num_envp = 0;
     while(envp[num_envp]){
-        printf("data[%ld]: %s\n", num_envp, (char*)envp[num_envp]);
+
+        if(ENVP_DEBUG){
+            printf("data[%ld]: %s\n", num_envp, (char*)envp[num_envp]);
+        }
+
         num_envp++;
     }
 
@@ -315,7 +621,11 @@ int main(int argc, char* argv[], char* envp[])
     av = (Elf64_auxv_t*) p;
 
     while(av[num_aux].a_type != AT_NULL){
-        printf("av[%02ld] av value: %02ld\n", num_aux, av[num_aux].a_type);
+
+        if(AV_DEBUG){
+            printf("av[%02ld] av value: %02ld\n", num_aux, av[num_aux].a_type);
+        }
+
         num_aux++;
     }
 
@@ -345,12 +655,14 @@ int main(int argc, char* argv[], char* envp[])
         user_esp_addr[1 + user_argc + 1 + num_envp + 1 + i] = 0xBEEFDE00 + i;
     }
 
-    printf("%ld\n", user_argc + 1);
-    printf("%ld\n", num_envp + 1);
-    printf("%ld\n", num_aux + 1);
-    printf("%ld\n", 1 + user_argc + 1 + num_envp + 1 + num_aux + 1);
+    if(STACK_DEBUG){
+        printf("%ld\n", user_argc + 1);
+        printf("%ld\n", num_envp + 1);
+        printf("%ld\n", num_aux + 1);
+        printf("%ld\n", 1 + user_argc + 1 + num_envp + 1 + num_aux + 1);
+    }
+
     user_esp_addr[1 + user_argc + 1 + num_envp + 1 + num_aux + 1] = 0;
-    printf("Passed\n");
 
     // Start Filling in values
 
@@ -358,29 +670,45 @@ int main(int argc, char* argv[], char* envp[])
     user_esp_addr[1] = data_start;
 
     for(int i = 2; i < user_argc + 1; i++){
-        printf("Looking at %s\n", argv[i-1]);
+        
+        if(ARG_DEBUG){
+            printf("Looking at %s\n", argv[i-1]);
+        }
+
         user_esp_addr[i] = user_esp_addr[i - 1] + len(argv[i-1]);
     }
 
     // Next insert envp pointers
 
-    printf("last item is: %08lx\n", user_esp_addr[user_argc]);
-    printf("Last element is: %s\n", argv[user_argc]);
-    printf("Last element len is: %d\n", len(argv[user_argc]));
+    if(STACK_DEBUG){
+        printf("last item is: %08lx\n", user_esp_addr[user_argc]);
+        printf("Last element is: %s\n", argv[user_argc]);
+        printf("Last element len is: %d\n", len(argv[user_argc]));
+    }
+
     uint64_t end_arg_data = user_esp_addr[user_argc] + len(argv[user_argc]);
     uint64_t arg_data_pad = 8 - (end_arg_data % 8);
-    printf("Ending Data %08lx\n", end_arg_data);
-    printf("Padding %ld\n", arg_data_pad);
+    
+    if(STACK_DEBUG){
+        printf("Ending Data %08lx\n", end_arg_data);
+        printf("Padding %ld\n", arg_data_pad);
+    }
 
     uint64_t start_env_data = end_arg_data + arg_data_pad;
 
-    printf("Starting env_data: %08lx\n", start_env_data);
+    if(STACK_DEBUG){
+        printf("Starting env_data: %08lx\n", start_env_data);
+    }
 
     user_esp_addr[user_argc + 2] = start_env_data;
 
     for(int i = 1; i < num_envp; i++){
-        printf("Looking at %s\n", envp[i-1]);
-        printf("len is: %d\n", len(envp[i-1]));
+
+        if(ENVP_DEBUG){
+            printf("Looking at %s\n", envp[i-1]);
+            printf("len is: %d\n", len(envp[i-1]));
+        }
+
         user_esp_addr[user_argc + 2 + i] = user_esp_addr[user_argc + 2 + i - 1] + len(envp[i-1]);
     }
 
@@ -392,14 +720,19 @@ int main(int argc, char* argv[], char* envp[])
         char* data_loc = (char*) user_esp_addr[1+arg];
         char* data = argv[1+arg];
 
-        printf("Location to copy is: %8lx\n", (uint64_t)data_loc);
-        printf("Source to copy is  : %8lx\n", (uint64_t)data);
-        printf("Data is            : %s\n", data);
-        printf("Len(data) is       : %d\n", len(data));
+        if(ARG_DEBUG){
+            printf("Location to copy is: %8lx\n", (uint64_t)data_loc);
+            printf("Source to copy is  : %8lx\n", (uint64_t)data);
+            printf("Data is            : %s\n", data);
+            printf("Len(data) is       : %d\n", len(data));
+        }
+
         memcpy(data_loc, data, len(data));
     }
 
-    printf("FINISHED ARGV DATA\n\n");
+    if(ARG_DEBUG){
+        printf("FINISHED ARGV DATA\n\n");
+    }
 
     // Now the envp data
 
@@ -407,14 +740,19 @@ int main(int argc, char* argv[], char* envp[])
         char* data_loc = (char*) user_esp_addr[1 + (user_argc + 1) + cur_env];
         char* data = envp[cur_env];
 
-        printf("Location to copy is: %8lx\n", (uint64_t)data_loc);
-        printf("Source to copy is  : %8lx\n", (uint64_t)data);
-        printf("Data is            : %s\n", data);
-        printf("Len(data) is       : %ld\n", sizeof(Elf64_auxv_t));
+        if(ENVP_DEBUG){
+            printf("Location to copy is: %8lx\n", (uint64_t)data_loc);
+            printf("Source to copy is  : %8lx\n", (uint64_t)data);
+            printf("Data is            : %s\n", data);
+            printf("Len(data) is       : %ld\n", sizeof(Elf64_auxv_t));
+        }
+
         memcpy(data_loc, data, len(data));
     }
 
-    printf("FINISHED ENVP DATA\n\n");
+    if(ENVP_DEBUG){
+        printf("FINISHED ENVP DATA\n\n");
+    }
 
     // Lastly the aux data
     for(int cur_aux = 0; cur_aux < num_aux; cur_aux++){
@@ -424,54 +762,29 @@ int main(int argc, char* argv[], char* envp[])
         char* data_loc = (char*) (start_aux_addr + cur_aux * sizeof(Elf64_auxv_t));
         char* data = (char*)&av[cur_aux];
 
-        printf("Location to copy is: %8lx\n", (uint64_t)data_loc);
-        printf("Source to copy is  : %8lx\n", (uint64_t)data);
-        printf("Data is            : %ld\n", av[cur_aux].a_type);
+        if(AV_DEBUG){
+            printf("Data is            : %ld\n", av[cur_aux].a_type);
+        }
+
         memcpy(data_loc, data, sizeof(Elf64_auxv_t));
     }
 
-    printf("FINISHED AUX DATA\n\n");
-
-    
-    printf("Last env pointer: %08x\n", (uint64_t)&user_esp_addr[1 + user_argc + 1 + num_envp + 1]);
+    if(AV_DEBUG){
+        printf("FINISHED AUX DATA\n\n");
+    }
 
     // CHECK THE VALIDITY OF THE STACK
-    // printf("ARGC:\n");
-    // printf("user_esp_addr[%2d] (%8lx) - %08lx\n", 0, (uint64_t)(user_esp_addr), (uint64_t)user_esp_addr[0]);
-    
-    // printf("ARGV:\n");
-    // for(int i = 0; i < user_argc; i++){
-    //     printf("user_esp_addr[%2d] - %s\n", i + 1, (char*)user_esp_addr[i+1]);
-    // }
-
-    // printf("ARGV ENDS:\n");
-    // printf("user_esp_addr[%2d] - %d\n", 1 + user_argc, user_esp_addr[1 + user_argc]);
-    
-    // printf("ENVP:\n");
-    // for(int i = 0; i < num_envp; i++){
-    //     printf("user_esp_addr[%2d] - %s\n", 1 + user_argc + 1 + i, (char*)user_esp_addr[1 + user_argc + 1 + i]);
-    // }
-    // printf("ENVP ENDS:\n");
-    // printf("user_esp_addr[%2d] - %d\n", 1 + user_argc + 1 + num_envp, user_esp_addr[1 + user_argc + 1 + num_envp]);
-
-    // printf("AUX:\n");
-
-    // for(int i = 0; i < num_aux * 2; i++){
-    //     printf("user_esp_addr[%2d] - %x\n", 1 + user_argc + 1 + num_envp + 1 + i, user_esp_addr[1 + user_argc + 1 + num_envp + 1 + i]);
-    // }
-
-    // printf("AUX ENDS\n");
-    // printf("user_esp_addr[%2d] - %d\n", 1 + user_argc + 1 + num_envp + 1 + num_aux * 2, user_esp_addr[1 + user_argc + 1 + num_envp + 1 + num_aux * 2]);
-
     // Now need to do some modification to the aux vectors in accordance with
     // loader.c from the github repo
 
-    printf("AT_PHDR is: %d\n", AT_PHDR);
-    printf("AT_PHENT is: %d\n", AT_PHENT);
-    printf("AT_PHNUM is: %d\n", AT_PHNUM);
-    printf("AT_BASE is: %d\n", AT_BASE);
-    printf("AT_ENTRY is: %d\n", AT_ENTRY);
-    printf("AT_EXECFN is: %d\n", AT_EXECFN);
+    if(STACK_DEBUG){
+        printf("AT_PHDR is: %d\n", AT_PHDR);
+        printf("AT_PHENT is: %d\n", AT_PHENT);
+        printf("AT_PHNUM is: %d\n", AT_PHNUM);
+        printf("AT_BASE is: %d\n", AT_BASE);
+        printf("AT_ENTRY is: %d\n", AT_ENTRY);
+        printf("AT_EXECFN is: %d\n", AT_EXECFN);
+    }
 
     #define AVSET(t, v, expr) case (t): (v)->a_un.a_val = (expr); break
     for(int i = 0; i < num_aux; i++){
@@ -489,14 +802,12 @@ int main(int argc, char* argv[], char* envp[])
         }
     }
 
-    // printf("STACK SEPARATOR\n\n");
-
-    // for(int i = 0; i < 86; i++){
-    //     printf("user_esp_addr[%2d] (%8lx) - %8lx\n", i, (uint64_t)(user_esp_addr+i), (uint64_t)user_esp_addr[i]);
-    // }
-
-    // return 0;
-
+    if(STACK_DEBUG){
+        printf("STACK SEPARATOR\n\n");
+        for(int i = 0; i < 86; i++){
+            printf("user_esp_addr[%2d] (%8lx) - %8lx\n", i, (uint64_t)(user_esp_addr+i), (uint64_t)user_esp_addr[i]);
+        }
+    }
 
     // GETTING THE ARG TRAP SET
     // Taken from:
@@ -508,41 +819,22 @@ int main(int argc, char* argv[], char* envp[])
     act.sa_flags = SA_SIGINFO;
     sigaction(SIGSEGV, &act, 0);
 
-    printf("Entry is: %08lx\n", header->e_entry);
-    printf("User stack: %08lx\n", (uint64_t)(user_esp_addr));
+    if(SIGTRAP_DEBUG){
+        printf("Entry is: %08lx\n", header->e_entry);
+        printf("User stack: %08lx\n", (uint64_t)(user_esp_addr));
+    }
 
     uint64_t* cur_addr = (uint64_t*)(user_esp_addr);
 
-    stack_check((void*)user_esp_addr, user_argc, &argv[1]);
+    if(STACK_CHECK_DEBUG){
+        stack_check((void*)user_esp_addr, user_argc, &argv[1]);
+    }
 
-    printf("ABOUT TO SWITCH TO USER\n");
+    if(SIGTRAP_DEBUG){
+        printf("ABOUT TO SWITCH TO USER\n");
+    }
+
     switchToUser(header->e_entry, (uint64_t)(user_esp_addr));
     printf("SHOULD NOT PRINT\n");
-
-    uint8_t* start_read = (uint8_t*) 0x404510;
-    uint64_t num_lines = 5;
-
-    for(int i = 0; i < num_lines; i++){
-        printf("%08lx - %02x\n", (uint64_t)(start_read + i), *(start_read + i));
-    }
-
-    printf("\n");
-
-    start_read = (uint8_t*) 0x404648;
-    num_lines = 5;
-
-    for(int i = 0; i < num_lines; i++){
-        printf("%08lx - %02x\n", (uint64_t)(start_read + i), *(start_read + i));
-    }
-
-    printf("\n");
-
-    start_read = (uint8_t*) 0x5D6E09;
-    num_lines = 8;
-
-    for(int i = 0; i < num_lines; i++){
-        printf("%08lx - %02x\n", (uint64_t)(start_read + i), *(start_read + i));
-    }
-    
     return 0;
 }
