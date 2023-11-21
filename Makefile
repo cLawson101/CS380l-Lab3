@@ -7,7 +7,7 @@ run-apager: apager
 	./apager.exe a.out hello world
 
 dpager: dpager.cpp my_elf.h switch.h
-	g++ -o dpager.exe dpager.cpp switch.S
+	g++ -g -o dpager.exe dpager.cpp switch.S
 
 run-dpager: dpager
 	./dpager.exe a.out hello world

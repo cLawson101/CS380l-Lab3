@@ -49,7 +49,6 @@ using namespace std;
 #define AV_DEBUG 0
 #define SIGTRAP_DEBUG 0
 
-
 #define STACK_CHECK_DEBUG 0
 
 int exacutable = -1;
@@ -191,21 +190,6 @@ int main(int argc, char* argv[], char* envp[])
 
         if(program_header->p_type != 1)
             continue;
-        
-        if(ELF_DEBUG){
-            printf("PROGRAM HEADER: %d\n", i);
-            printf("type: %x\n", program_header->p_type);
-            printf("flags: %x\n", program_header->p_flags);
-            printf("offset: %lx\n", program_header->p_offset);
-            printf("vaddr: %lx\n", program_header->p_vaddr);
-            printf("paddr: %lx\n", program_header->p_paddr);
-            printf("filesz: %lx\n", program_header->p_filesz);
-            printf("memsz: %lx\n", program_header->p_memsz);
-            printf("align: %lx\n", program_header->p_align);
-
-            printf("Allocating address: %lx\n", program_header->p_vaddr);
-            printf("Allocating memsize: %lx\n\n", program_header->p_memsz);
-        }
 
         if((uint64_t)program_header->p_vaddr < minva){
             // printf("CHANGING MINVA\n");
@@ -237,7 +221,7 @@ int main(int argc, char* argv[], char* envp[])
     munmap(base, maxva - minva);
 
     if(ELF_DEBUG) {
-        printf("CAN HOLD FULL IMAGE\n");
+        printf("CAN HOLD FULL IMAGE\n\n");
     }
 
     for(uint32_t i = 0; i < header->phnum; i++){
@@ -296,6 +280,10 @@ int main(int argc, char* argv[], char* envp[])
         
         char* p = (char*)mmap((void*)start, sz, PROT_WRITE, flags, -1, 0u);
 
+        if(ELF_DEBUG){
+            printf("Going to map: %08lx - %08lx\n", start, start+sz);
+        }
+
         if( p == (void*) -1){
             perror("mmap error");
             exit(255);
@@ -315,10 +303,18 @@ int main(int argc, char* argv[], char* envp[])
 
         int read_ret = read(fd, p + off, program_header->p_filesz);
 
+        // uint64_t addr_p = (uint64_t) p;
+
+        // for(int i = 0; i < program_header->p_filesz; i++){
+        //     printf("%08lx : %x\n", addr_p + off + i, *((char*) (addr_p + off + i)));
+        // }
+
         if( read_ret != (ssize_t)program_header->p_filesz){
             perror("read error");
             exit(255);
         }
+
+        // printf("Protecting: %08lx - %08lx\n", (uint64_t)p, (uint64_t)p + sz);
         
         mprotect(p, sz, PFLAGS(program_header->p_flags));
 
