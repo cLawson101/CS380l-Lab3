@@ -49,7 +49,7 @@ using namespace std;
 #define AV_DEBUG 0
 #define SIGTRAP_DEBUG 0
 
-#define SEGFAULT_DEBUG 1
+#define SEGFAULT_DEBUG 0
 #define SEGFAULT_FULL_DEBUG 0
 #define SEGFAULT_PROT_DEBUG 0
 
@@ -703,8 +703,6 @@ int main(int argc, char* argv[], char* envp[])
         ){
             continue;
         }
-
-        printf("GOT PAST\n");
 
         if(ELF_DEBUG){
             printf("PROGRAM HEADER: %d\n", i);
