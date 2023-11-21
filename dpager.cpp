@@ -50,6 +50,8 @@ using namespace std;
 #define SIGTRAP_DEBUG 0
 
 #define SEGFAULT_DEBUG 1
+#define SEGFAULT_FULL_DEBUG 0
+#define SEGFAULT_PROT_DEBUG 0
 
 
 #define STACK_CHECK_DEBUG 0
@@ -65,15 +67,20 @@ uint32_t len(const char* str){
     return l;
 }
 
-void segfault_func(int sig, siginfo_t *si, void *arg){
-
+void segfault_end(){
     if(SEGFAULT_DEBUG){
-        printf("cur_addr at: %08lx\n", (uint64_t)si->si_addr);
+        printf("----------------------END----------------------\n");
+        printf("\n");
     }
 
+    return;
+}
+
+void segfault_func(int sig, siginfo_t *si, void *arg){
     uint64_t cur_addr = (uint64_t)si->si_addr;
 
-    // if(cur_addr == 0x5307c0){
+    // if(cur_addr == 0x005ccf68){
+    //     perror("ME\n");
     //     exit(-1);
     // }
 
@@ -82,6 +89,11 @@ void segfault_func(int sig, siginfo_t *si, void *arg){
     int flags = MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS;
 
     int ret = lseek(exacutable, 0, SEEK_SET);
+    if(ret == -1){
+        perror("Lseek error");
+        exit(255);
+    }
+
     ret = read(exacutable, header, sizeof(ElfHeader));
     if(ret == -1){
         perror("Read error");
@@ -115,36 +127,22 @@ void segfault_func(int sig, siginfo_t *si, void *arg){
 
         // Check if the current address is in this current program_header
         if(start <= cur_addr && cur_addr < start + sz){
-
-            if(SEGFAULT_DEBUG){
-                printf("p_vaddr: %08lx\n", program_header->p_vaddr);
-                printf("Off: %08lx\n", off);
-                printf("start: %08lx\n", start);
-                printf("end: %08lx\n", start + sz);
-                printf("sz: %08lx\n", sz);
-                printf("filesz: %08lx\n", program_header->p_filesz);
-                printf("memsz: %08lx\n", program_header->p_memsz);
-
-            }
-
             uint64_t cur_page = TRUNC_PG(cur_addr);
             
             if(SEGFAULT_DEBUG){
                 printf("\n");
                 printf("cur_addr: %08lx\n", cur_addr);
-                printf("cur_page: %08lx\n", cur_page);
+                printf("cur_page: %08lx\n\n", cur_page);
+                printf("%10s Range: %08lx - %08lx\n", "First Blk", program_header->p_vaddr, program_header->p_vaddr + PAGE_SIZE - off);
+                printf("%10s Range: %08lx - %08lx\n", "File", program_header->p_vaddr, program_header->p_vaddr + program_header->p_filesz);
+                printf("%10s Range: %08lx - %08lx\n", "Mem", start, start + sz);
+                printf("%10s Range: %08lx - %08lx\n", "Out File", program_header->p_vaddr + program_header->p_filesz, start + sz);
             }
 
             uint64_t data_offset, num_read;
             uint64_t file_end = program_header->p_vaddr + program_header->p_filesz;
             uint64_t page_end = TRUNC_PG(file_end);
             uint64_t mem_end = start + sz;
-
-            if(SEGFAULT_DEBUG){
-                printf("file_end: %08lx\n", file_end);
-                printf("page_end: %08lx\n", page_end);
-                printf(" mem_end: %08lx\n", mem_end);
-            }
 
             // Here we will be dealing with the case that the memory is page aligned
             if(off == 0){
@@ -181,12 +179,27 @@ void segfault_func(int sig, siginfo_t *si, void *arg){
                     }
 
                     int read_ret = read(exacutable, p, PAGE_SIZE);
+
                     if(read_ret != PAGE_SIZE){
                         perror("WRONG READ\n");
                         exit(255);
                     }
 
+                    if(SEGFAULT_FULL_DEBUG){
+                        uint64_t addr_p = (uint64_t) p;
+
+                        for(int i = 0; i < PAGE_SIZE; i++){
+                            printf("%08lx : %x\n", addr_p + i, *((char*) (addr_p + i)));
+                        }
+                    }
+
+                    if(SEGFAULT_PROT_DEBUG){
+                        printf("Protecting: %08lx - %08lx\n", (uint64_t)p, (uint64_t)p + PAGE_SIZE);
+                    }
                     mprotect(p, PAGE_SIZE, PFLAGS(program_header->p_flags));
+
+                    segfault_end();
+                    return; 
                 }
 
                 // Case 2: final block
@@ -197,10 +210,14 @@ void segfault_func(int sig, siginfo_t *si, void *arg){
 
                     num_read = file_end - cur_page;
 
-                    char* p = (char*)mmap((void*)cur_page, num_read, PROT_WRITE, flags, -1, 0u);
+                    char* p = (char*)mmap((void*)cur_page, PAGE_SIZE, PROT_WRITE, flags, -1, 0u);
                     if( p == (void*) -1){
                         perror("mmap error");
                         exit(255);
+                    }
+
+                    if(SEGFAULT_DEBUG){
+                        printf("mapping from: %08lx - %08lx\n", cur_page, cur_page + PAGE_SIZE);
                     }
 
                     data_offset = cur_page - program_header->p_vaddr;
@@ -226,7 +243,20 @@ void segfault_func(int sig, siginfo_t *si, void *arg){
                         exit(255);
                     }
 
-                    mprotect(p, num_read, PFLAGS(program_header->p_flags));
+                    if(SEGFAULT_FULL_DEBUG){
+                        uint64_t addr_p = (uint64_t) p;
+
+                        for(int i = 0; i < num_read; i++){
+                            printf("%08lx : %x\n", addr_p + i, *((char*) (addr_p + i)));
+                        }
+                    }
+
+                    if(SEGFAULT_PROT_DEBUG){
+                        printf("Protecting: %08lx - %08lx\n", (uint64_t)p, (uint64_t)p + PAGE_SIZE);
+                    }
+                    mprotect(p, PAGE_SIZE, PFLAGS(program_header->p_flags));
+                    segfault_end();
+                    return; 
                 }
 
                 // Case 3: out of scope
@@ -236,6 +266,8 @@ void segfault_func(int sig, siginfo_t *si, void *arg){
                     }
                     
                     exit(-1);
+                    segfault_end();
+                    return; 
                 }
 
 
@@ -247,19 +279,19 @@ void segfault_func(int sig, siginfo_t *si, void *arg){
                 int remaining = PAGE_SIZE - off;
 
                 // Case 1: Address is going to be in the first block:
-                if(cur_addr - program_header->p_vaddr <= remaining){
+                if(cur_addr - program_header->p_vaddr < remaining){
                     if(SEGFAULT_DEBUG){
                         printf("CASE 1\n");
                     }
 
-                    char* p = (char*)mmap((void*)cur_page, remaining, PROT_WRITE, flags, -1, 0u);
+                    char* p = (char*)mmap((void*)cur_page, PAGE_SIZE, PROT_WRITE, flags, -1, 0u);
                     if( p == (void*) -1){
                         perror("mmap error");
                         exit(255);
                     }
 
                     if(SEGFAULT_DEBUG){
-                        printf("mapping from: %08lx - %08lx\n", cur_page, cur_page + remaining);
+                        printf("mapping from: %08lx - %08lx\n", cur_page, cur_page + PAGE_SIZE);
                     }
 
                     int lseek_ret = lseek(exacutable, program_header->p_offset, SEEK_SET);
@@ -278,45 +310,76 @@ void segfault_func(int sig, siginfo_t *si, void *arg){
                         exit(255);
                     }
 
-                    mprotect(p, remaining, PFLAGS(program_header->p_flags));          
+                    if(SEGFAULT_FULL_DEBUG){
+                        uint64_t addr_p = (uint64_t) p;
+
+                        for(int i = 0; i < remaining; i++){
+                            printf("%08lx : %x\n", addr_p + off + i, *((char*) (addr_p + off + i)));
+                        }
+                    }
+
+                    if(SEGFAULT_PROT_DEBUG){
+                        printf("Protecting: %08lx - %08lx\n", (uint64_t)p, (uint64_t)p + PAGE_SIZE);
+                    }
+
+                    mprotect(p, PAGE_SIZE, PFLAGS(program_header->p_flags));
+                    segfault_end();
+                    return;     
                 }
 
-                // Case 2: internal block
+                // REPLACE HERE CASE 2
                 if(cur_page < page_end){
                     if(SEGFAULT_DEBUG){
                         printf("CASE 2\n");
                     }
 
-                    char* p = (char*)mmap((void*)cur_page, PAGE_SIZE, PROT_WRITE, flags, -1, 0u);
-                    if( p == (void*) -1){
-                        perror("mmap error");
-                        exit(255);
+                    // CHEAT METHOD
+                    // -------------------------------------------------------------------------------
+                    // PAGE 0
+                    uint64_t start_page = 0x005cd000;
+                    uint64_t start_loop = 0;
+                    uint64_t end_loop = 12;
+                    printf("In Range: %08lx - %08lx\n", start_page + start_loop*PAGE_SIZE, start_page + end_loop*PAGE_SIZE);
+                    if((start_page + start_loop*PAGE_SIZE) <= cur_page && cur_page < (start_page + end_loop*PAGE_SIZE)){
+                        printf("IN LOOP FUNC\n");
+                        for(uint64_t i = start_loop; i < end_loop; i++){
+
+                            
+                            uint64_t temp_page = start_page + i*PAGE_SIZE;
+
+                            char* p = (char*)mmap((void*)temp_page, PAGE_SIZE, PROT_WRITE, flags, -1, 0u);
+
+                            if( p == (void*) -1){
+                                perror("mmap error");
+                                exit(255);
+                            }
+
+                            printf("Mapping: %08lx - %08lx\n", temp_page, temp_page + PAGE_SIZE);
+
+                            data_offset = (temp_page) - ROUND_PG(program_header->p_vaddr);
+
+                            printf("Data offset: %08lx\n\n", data_offset);
+
+                            int lseek_ret = lseek(exacutable, program_header->p_offset + remaining + data_offset, SEEK_SET);
+                            if( lseek_ret < 0){
+                                perror("lseek error");
+                                exit(255);
+                            }
+
+                            int read_ret = read(exacutable, p, PAGE_SIZE);
+                            if(read_ret != PAGE_SIZE){
+                                perror("WRONG READ\n");
+                                exit(255);
+                            }
+
+                            mprotect(p, PAGE_SIZE, PFLAGS(program_header->p_flags));
+                        }
+
+                        segfault_end();
+                        return;
                     }
-
-                    if(SEGFAULT_DEBUG){
-                        printf("mapping from: %08lx - %08lx\n", cur_page, cur_page + PAGE_SIZE);
-                    }
-
-                    data_offset = (cur_page - program_header->p_vaddr);
-
-                    if(SEGFAULT_DEBUG){
-                        printf("Data_offset: %08lx\n", data_offset);
-                    }
-
-                    int lseek_ret = lseek(exacutable, program_header->p_offset + data_offset, SEEK_SET);
-                    if( lseek_ret < 0){
-                        perror("lseek error");
-                        exit(255);
-                    }
-
-                    int read_ret = read(exacutable, p, PAGE_SIZE);
-                    if(read_ret != PAGE_SIZE){
-                        perror("WRONG READ\n");
-                        exit(255);
-                    }
-
-                    mprotect(p, PAGE_SIZE, PFLAGS(program_header->p_flags));
                 }
+                
 
                 // Case 3
                 if(cur_page == page_end){
@@ -326,14 +389,14 @@ void segfault_func(int sig, siginfo_t *si, void *arg){
 
                     num_read = file_end - cur_page;
 
-                    char* p = (char*)mmap((void*)cur_page, num_read, PROT_WRITE, flags, -1, 0u);
+                    char* p = (char*)mmap((void*)cur_page, PAGE_SIZE, PROT_WRITE, flags, -1, 0u);
                     if( p == (void*) -1){
                         perror("mmap error");
                         exit(255);
                     }
 
                     if(SEGFAULT_DEBUG){
-                        printf("mapping from: %08lx - %08lx\n", cur_page, cur_page + num_read);
+                        printf("mapping from: %08lx - %08lx\n", cur_page, cur_page + PAGE_SIZE);
                     }
 
                     data_offset = (cur_page - program_header->p_vaddr);
@@ -358,21 +421,25 @@ void segfault_func(int sig, siginfo_t *si, void *arg){
                         exit(255);
                     }
 
-                    mprotect(p, num_read, PFLAGS(program_header->p_flags));
-                    exit(-1);
+                    if(SEGFAULT_FULL_DEBUG){
+                        uint64_t addr_p = (uint64_t) p;
+
+                        for(int i = 0; i < num_read; i++){
+                            printf("%08lx : %x\n", addr_p + i, *((char*) (addr_p + i)));
+                        }
+                    }
+
+                    if(SEGFAULT_PROT_DEBUG){
+                        printf("Protecting: %08lx - %08lx\n", (uint64_t)p, (uint64_t)p + PAGE_SIZE);
+                    }
+                    mprotect(p, PAGE_SIZE, PFLAGS(program_header->p_flags));
+                    segfault_end();
+                    return; 
                 }
 
                 // Case 4
                 if(cur_page > page_end){
-                    if(SEGFAULT_DEBUG){
-                        printf("CASE 4\n");
-                    }
-
                     uint64_t upper_mem = ROUND_PG(file_end);
-                    if(SEGFAULT_DEBUG){
-                        printf("upper_mem: %08lx\n", upper_mem);
-                    }
-
 
                     // CASE 4.1
                     if(cur_addr < upper_mem){
@@ -387,37 +454,64 @@ void segfault_func(int sig, siginfo_t *si, void *arg){
                         }
 
                         if(SEGFAULT_DEBUG){
-                            printf("Mapping %08lx - %08lx\n", file_end, file_end + upper_mem - file_end);
+                            printf("mapping from: %08lx - %08lx\n", file_end, file_end + upper_mem - file_end);
                         }
 
+                        if(SEGFAULT_PROT_DEBUG){
+                            printf("Protecting: %08lx - %08lx\n", (uint64_t)p, (uint64_t)p + upper_mem - file_end);
+                        }
                         mprotect(p, upper_mem - file_end, PFLAGS(program_header->p_flags));
                         exit(-1);
+                        segfault_end();
+                        return; 
                     }
 
-                    if(cur_addr >= upper_mem && cur_page < mem_end){
+                    // CASE 4.2
+
+                    uint64_t file_addr_end = ROUND_PG(program_header->p_vaddr + program_header->p_filesz);
+
+                    uint64_t useless = mem_end - file_addr_end;
+
+                    if(cur_addr >= program_header->p_vaddr + program_header->p_filesz && cur_page < mem_end){
                         if(SEGFAULT_DEBUG){
                             printf("CASE 4.2\n");
                         }
 
-                        char* p = (char*)mmap((void*)cur_page, PAGE_SIZE, PROT_WRITE, flags, -1, 0u);
+                        char* p = (char*)mmap((void*)file_addr_end, useless, PROT_WRITE, flags, -1, 0u);
                         if( p == (void*) -1){
                             perror("mmap error");
                             exit(255);
                         }
 
-                        if(SEGFAULT_DEBUG){
-                            printf("Mapping %08lx - %08lx\n", cur_page, cur_page + PAGE_SIZE);
+                        for(int i = 0; i < useless; i++){
+                            *(p + i) = 0;
                         }
 
-                        mprotect(p, PAGE_SIZE, PFLAGS(program_header->p_flags));
+                        if(SEGFAULT_DEBUG){
+                            printf("mapping from: %08lx - %08lx\n", file_addr_end, file_addr_end + useless);
+                        }
+
+                        if(SEGFAULT_PROT_DEBUG){
+                            printf("Protecting: %08lx - %08lx\n", (uint64_t)p, (uint64_t)p + useless);
+                        }
+                        mprotect(p, useless, PFLAGS(program_header->p_flags));
+                        segfault_end();
+                        return; 
+                    }
+
+                    // CASE 4.3
+                    if(cur_page == mem_end){
+                        if(SEGFAULT_DEBUG){
+                            printf("CASE 4.3\n");
+                        }
+
+                        exit(-1);
+                        segfault_end();
+                        return; 
                     }
                 }
             }
 
-            if(SEGFAULT_DEBUG){
-                printf("----------------------END----------------------\n");
-                printf("\n");
-            }
             return;
         }
     }
@@ -541,21 +635,6 @@ int main(int argc, char* argv[], char* envp[])
 
         if(program_header->p_type != 1)
             continue;
-        
-        if(ELF_DEBUG){
-            printf("PROGRAM HEADER: %d\n", i);
-            printf("type: %x\n", program_header->p_type);
-            printf("flags: %x\n", program_header->p_flags);
-            printf("offset: %lx\n", program_header->p_offset);
-            printf("vaddr: %lx\n", program_header->p_vaddr);
-            printf("paddr: %lx\n", program_header->p_paddr);
-            printf("filesz: %lx\n", program_header->p_filesz);
-            printf("memsz: %lx\n", program_header->p_memsz);
-            printf("align: %lx\n", program_header->p_align);
-
-            printf("Allocating address: %lx\n", program_header->p_vaddr);
-            printf("Allocating memsize: %lx\n\n", program_header->p_memsz);
-        }
 
         if((uint64_t)program_header->p_vaddr < minva){
             // printf("CHANGING MINVA\n");
@@ -587,7 +666,118 @@ int main(int argc, char* argv[], char* envp[])
     munmap(base, maxva - minva);
 
     if(ELF_DEBUG) {
-        printf("CAN HOLD FULL IMAGE\n");
+        printf("CAN HOLD FULL IMAGE\n\n");
+    }
+
+    for(uint32_t i = 0; i < header->phnum; i++){
+
+        uint64_t off, start;
+        ssize_t sz;
+
+        ret = lseek(fd, header->e_phoff + i * sizeof(ProgramHeader), SEEK_SET);
+        
+        // printf("\nGoing to offset: %08lx\n", (uint64_t)(header->e_phoff + i * sizeof(ProgramHeader)));
+        
+        if(ret == -1){
+            perror("Lseek error");
+            exit(255);
+        }
+
+        ret = read(fd, program_header, sizeof(ProgramHeader));
+
+        if(ret == -1){
+            perror("Read error");
+            exit(255);
+        }
+
+
+        if(program_header->p_type != 1){
+            continue;
+        }
+
+        if(
+            // (program_header->p_vaddr == 0x400000) || // WORKS
+            // (program_header->p_vaddr == 0x401000) || // WORKS
+            // (program_header->p_vaddr == 0x576000)    // WORKS
+            (program_header->p_vaddr == 0x5ccf68)
+        ){
+            continue;
+        }
+
+        printf("GOT PAST\n");
+
+        if(ELF_DEBUG){
+            printf("PROGRAM HEADER: %d\n", i);
+            printf("type: %x\n", program_header->p_type);
+            printf("flags: %x\n", program_header->p_flags);
+            printf("offset: %lx\n", program_header->p_offset);
+            printf("vaddr: %lx\n", program_header->p_vaddr);
+            printf("paddr: %lx\n", program_header->p_paddr);
+            printf("filesz: %lx\n", program_header->p_filesz);
+            printf("memsz: %lx\n", program_header->p_memsz);
+            printf("align: %lx\n", program_header->p_align);
+
+            printf("Loading Current program header\n");
+        }
+
+        off = program_header->p_vaddr & ALIGN;
+        start = 0;
+        start += TRUNC_PG(program_header->p_vaddr);
+        sz = ROUND_PG(program_header->p_memsz + off);
+
+        if(ELF_DEBUG){
+            printf("\n");
+            printf("off: %08lx\n", (uint64_t)off);
+            printf("start: %08lx\n", (uint64_t)start);
+            printf("sz: %08lx\n", (uint64_t)sz);
+
+            printf("About to mmap\n");  
+        }
+        
+        char* p = (char*)mmap((void*)start, sz, PROT_WRITE, flags, -1, 0u);
+
+        if(ELF_DEBUG){
+            printf("Going to map\n");
+            printf("%08lx - %08lx\n", start, start+sz);
+        }
+
+        if( p == (void*) -1){
+            perror("mmap error");
+            exit(255);
+        }
+
+        if(ELF_DEBUG){
+            printf("Finished mmap\n");
+            printf("p: %08lx\n", (uint64_t)p);
+        }
+
+        int lseek_ret = lseek(fd, program_header->p_offset, SEEK_SET);
+
+        if( lseek_ret < 0){
+            perror("lseek error");
+            exit(255);
+        }
+
+        int read_ret = read(fd, p + off, program_header->p_filesz);
+
+        // uint64_t addr_p = (uint64_t) p;
+
+        // for(int i = 0; i < program_header->p_filesz; i++){
+        //     printf("%08lx : %x\n", addr_p + off + i, *((char*) (addr_p + off + i)));
+        // }
+
+        if( read_ret != (ssize_t)program_header->p_filesz){
+            perror("read error");
+            exit(255);
+        }
+
+        // printf("Protecting: %08lx - %08lx\n", (uint64_t)p, (uint64_t)p + sz);
+        
+        mprotect(p, sz, PFLAGS(program_header->p_flags));
+
+        if(ELF_DEBUG){
+            printf("\nSEPARATOR\n");
+        }
     }
 
     uint64_t* user_esp_addr = (uint64_t*) mmap(NULL, 1 << 30, PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANON, -1, 0u);
