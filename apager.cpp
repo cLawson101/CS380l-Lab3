@@ -224,6 +224,8 @@ int main(int argc, char* argv[], char* envp[])
         printf("CAN HOLD FULL IMAGE\n\n");
     }
 
+    uint64_t total_mapped = 0;
+
     for(uint32_t i = 0; i < header->phnum; i++){
 
         uint64_t off, start;
@@ -279,6 +281,7 @@ int main(int argc, char* argv[], char* envp[])
         }
         
         char* p = (char*)mmap((void*)start, sz, PROT_WRITE, flags, -1, 0u);
+        total_mapped += (sz - start);
 
         if(ELF_DEBUG){
             printf("Going to map: %08lx - %08lx\n", start, start+sz);
@@ -322,6 +325,9 @@ int main(int argc, char* argv[], char* envp[])
             printf("\nSEPARATOR\n");
         }
     }
+
+    // PRINT OUT MAPPING HERE:
+    printf("Total bytes mapped: %08lx\n", total_mapped);
 
     uint64_t* user_esp_addr = (uint64_t*) mmap(NULL, 1 << 30, PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANON, -1, 0u);
     // uint64_t* user_esp_addr = (uint64_t*) mmap((void*)0x6ff786acc000, 1 << 30, PROT_WRITE | PROT_READ, MAP_ANON, -1, 0u);
